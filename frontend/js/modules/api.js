@@ -1,11 +1,14 @@
 // API Communication Module - Fixed for proper backend integration
+if (!window.app) window.app = {};
+
 app.api = {
-    // Use relative URL for API to work with Docker setup
-    baseURL: '/api',
+    // API base URL - untuk Docker setup
+    baseURL: window.location.origin + '/api',
     token: null,
 
     init() {
         this.token = localStorage.getItem('secureops_token');
+        console.log('API module initialized with baseURL:', this.baseURL);
     },
 
     // Set authorization header
@@ -24,36 +27,50 @@ app.api = {
 
     // Handle response
     async handleResponse(response) {
-        // Try to get response as text first
-        const text = await response.text();
+        const contentType = response.headers.get('content-type');
         
-        // Try to parse as JSON
-        try {
-            const data = text ? JSON.parse(text) : {};
+        if (contentType && contentType.includes('application/json')) {
+            const data = await response.json();
             
             if (!response.ok) {
-                throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+                // Handle error response
+                const error = new Error(data.message || data.error || `Request failed with status ${response.status}`);
+                error.status = response.status;
+                error.data = data;
+                throw error;
             }
             
             return data;
-        } catch (error) {
+        } else {
+            // Handle non-JSON response
+            const text = await response.text();
+            
             if (!response.ok) {
-                throw new Error(`Request failed: ${text || response.statusText}`);
+                const error = new Error(text || `Request failed with status ${response.status}`);
+                error.status = response.status;
+                throw error;
             }
-            throw error;
+            
+            // Try to parse as JSON anyway
+            try {
+                return JSON.parse(text);
+            } catch {
+                return { message: text };
+            }
         }
     },
 
     // GET request
     async get(endpoint) {
         try {
+            console.log('GET request to:', this.baseURL + endpoint);
+            
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'GET',
-                headers: this.getHeaders(),
-                credentials: 'include'
+                headers: this.getHeaders()
             });
             
-            return this.handleResponse(response);
+            return await this.handleResponse(response);
         } catch (error) {
             console.error('API GET error:', error);
             throw error;
@@ -63,14 +80,16 @@ app.api = {
     // POST request
     async post(endpoint, data = {}) {
         try {
+            console.log('POST request to:', this.baseURL + endpoint);
+            console.log('POST data:', data);
+            
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'POST',
                 headers: this.getHeaders(),
-                body: JSON.stringify(data),
-                credentials: 'include'
+                body: JSON.stringify(data)
             });
             
-            return this.handleResponse(response);
+            return await this.handleResponse(response);
         } catch (error) {
             console.error('API POST error:', error);
             throw error;
@@ -80,14 +99,15 @@ app.api = {
     // PUT request
     async put(endpoint, data = {}) {
         try {
+            console.log('PUT request to:', this.baseURL + endpoint);
+            
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'PUT',
                 headers: this.getHeaders(),
-                body: JSON.stringify(data),
-                credentials: 'include'
+                body: JSON.stringify(data)
             });
             
-            return this.handleResponse(response);
+            return await this.handleResponse(response);
         } catch (error) {
             console.error('API PUT error:', error);
             throw error;
@@ -97,13 +117,14 @@ app.api = {
     // DELETE request
     async delete(endpoint) {
         try {
+            console.log('DELETE request to:', this.baseURL + endpoint);
+            
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'DELETE',
-                headers: this.getHeaders(),
-                credentials: 'include'
+                headers: this.getHeaders()
             });
             
-            return this.handleResponse(response);
+            return await this.handleResponse(response);
         } catch (error) {
             console.error('API DELETE error:', error);
             throw error;
@@ -131,11 +152,10 @@ app.api = {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'POST',
                 headers,
-                body: formData,
-                credentials: 'include'
+                body: formData
             });
             
-            return this.handleResponse(response);
+            return await this.handleResponse(response);
         } catch (error) {
             console.error('API upload error:', error);
             throw error;
@@ -152,6 +172,16 @@ app.api = {
     clearToken() {
         this.token = null;
         localStorage.removeItem('secureops_token');
+    },
+
+    // Check if API is reachable
+    async checkConnection() {
+        try {
+            const response = await fetch(this.baseURL.replace('/api', '/health'));
+            return response.ok;
+        } catch {
+            return false;
+        }
     },
 
     // Add delay utility for demo purposes

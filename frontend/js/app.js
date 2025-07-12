@@ -1,5 +1,8 @@
 // SecureOps Main Application Controller
-const app = {
+if (!window.app) window.app = {};
+
+// Extend app object
+Object.assign(app, {
     // Application state
     state: {
         user: null,
@@ -10,27 +13,47 @@ const app = {
     },
 
     // Initialize application
-    init() {
+    async init() {
         console.log('Initializing SecureOps...');
         
-        // Check authentication
-        const token = localStorage.getItem('secureops_token');
-        if (token) {
-            this.authenticate(token);
-        } else {
-            this.showLogin();
-        }
-
-        // Setup event listeners
-        this.setupEventListeners();
-        
-        // Initialize modules
+        // Initialize modules first
         this.api.init();
         this.auth.init();
         this.incident.init();
         this.ioc.init();
         this.attribution.init();
         this.report.init();
+        
+        // Check API connection
+        const isConnected = await this.api.checkConnection();
+        if (!isConnected) {
+            console.warn('API connection failed, but continuing...');
+        }
+        
+        // Setup event listeners
+        this.setupEventListeners();
+        
+        // Check authentication
+        const token = localStorage.getItem('secureops_token');
+        if (token) {
+            // Validate token
+            try {
+                const user = await this.api.get('/auth/profile');
+                this.state.user = user;
+                this.showMainApp();
+                this.updateUserInfo();
+                this.buildNavigation();
+                this.navigateTo('dashboard');
+                this.loadNotifications();
+                this.startPolling();
+            } catch (error) {
+                console.error('Token validation failed:', error);
+                this.api.clearToken();
+                this.showLogin();
+            }
+        } else {
+            this.showLogin();
+        }
     },
 
     // Setup global event listeners
@@ -38,9 +61,33 @@ const app = {
         // Login form
         const loginForm = document.getElementById('loginForm');
         if (loginForm) {
-            loginForm.addEventListener('submit', (e) => {
+            loginForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                this.handleLogin();
+                await this.handleLogin();
+            });
+        }
+
+        // Logout button
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => {
+                this.auth.logout();
+            });
+        }
+
+        // Notification button
+        const notificationBtn = document.getElementById('notificationBtn');
+        if (notificationBtn) {
+            notificationBtn.addEventListener('click', () => {
+                this.showNotifications();
+            });
+        }
+
+        // Close notification panel
+        const closeNotificationBtn = document.getElementById('closeNotificationBtn');
+        if (closeNotificationBtn) {
+            closeNotificationBtn.addEventListener('click', () => {
+                this.hideNotifications();
             });
         }
 
@@ -61,48 +108,64 @@ const app = {
     async handleLogin() {
         const email = document.getElementById('loginEmail').value;
         const password = document.getElementById('loginPassword').value;
+        const loginButton = document.getElementById('loginButton');
+        const loginButtonText = document.getElementById('loginButtonText');
+        const loginError = document.getElementById('loginError');
+        const loginErrorText = document.getElementById('loginErrorText');
 
-        this.showLoading(true);
+        // Reset error
+        loginError.style.display = 'none';
+        
+        // Disable form
+        loginButton.disabled = true;
+        loginButtonText.innerHTML = 'Logging in... <i class="fas fa-spinner fa-spin"></i>';
         
         try {
             const result = await this.auth.login(email, password);
+            
             if (result.success) {
-                this.authenticate(result.token);
+                // Store user data
+                this.state.user = result.user;
+                
+                // Show main app
+                this.showMainApp();
+                this.updateUserInfo();
+                this.buildNavigation();
+                this.navigateTo('dashboard');
+                
+                // Load initial data
+                setTimeout(() => {
+                    this.loadNotifications();
+                    this.startPolling();
+                }, 100);
+                
+                // Show success message
+                this.showToast('success', 'Login Successful', `Welcome back, ${result.user.name}!`);
             } else {
-                this.showToast('error', 'Login Failed', result.message);
+                // Show error
+                loginErrorText.textContent = result.message || 'Invalid credentials';
+                loginError.style.display = 'flex';
             }
         } catch (error) {
-            this.showToast('error', 'Error', 'Unable to connect to server');
+            console.error('Login error:', error);
+            loginErrorText.textContent = error.message || 'Unable to connect to server. Please check if the backend is running.';
+            loginError.style.display = 'flex';
+        } finally {
+            // Re-enable form
+            loginButton.disabled = false;
+            loginButtonText.innerHTML = 'Login';
         }
-        
-        this.showLoading(false);
-    },
-
-    // Authenticate user
-    authenticate(token) {
-        // Store token
-        localStorage.setItem('secureops_token', token);
-        
-        // Get user info
-        this.state.user = this.auth.getUserInfo(token);
-        
-        // Update UI
-        this.showMainApp();
-        this.updateUserInfo();
-        this.buildNavigation();
-        this.navigateTo('dashboard');
-        
-        // Load initial data
-        setTimeout(() => {
-            this.loadNotifications();
-            this.startPolling();
-        }, 100);
     },
 
     // Show login screen
     showLogin() {
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mainApp').style.display = 'none';
+        
+        // Clear any stored data
+        this.state.user = null;
+        this.state.incidents = [];
+        this.state.notifications = [];
     },
 
     // Show main application
@@ -123,13 +186,13 @@ const app = {
     buildNavigation() {
         const navMenu = document.getElementById('navMenu');
         const menuItems = [
-            { id: 'dashboard', icon: 'fas fa-tachometer-alt', label: 'Dashboard', badge: null },
-            { id: 'incidents', icon: 'fas fa-file-alt', label: 'Incidents', badge: this.state.incidents.filter(i => i.status === 'open').length || null },
-            { id: 'create', icon: 'fas fa-plus-circle', label: 'Create Report', badge: null },
-            { id: 'analytics', icon: 'fas fa-chart-line', label: 'Analytics', badge: null },
-            { id: 'threat-intel', icon: 'fas fa-database', label: 'Threat Intel', badge: null },
-            { id: 'team', icon: 'fas fa-users', label: 'Team', badge: null },
-            { id: 'settings', icon: 'fas fa-cog', label: 'Settings', badge: null }
+            { id: 'dashboard', icon: 'fas fa-tachometer-alt', label: 'Dashboard' },
+            { id: 'incidents', icon: 'fas fa-file-alt', label: 'Incidents' },
+            { id: 'create', icon: 'fas fa-plus-circle', label: 'Create Report' },
+            { id: 'analytics', icon: 'fas fa-chart-line', label: 'Analytics' },
+            { id: 'threat-intel', icon: 'fas fa-database', label: 'Threat Intel' },
+            { id: 'team', icon: 'fas fa-users', label: 'Team' },
+            { id: 'settings', icon: 'fas fa-cog', label: 'Settings' }
         ];
 
         navMenu.innerHTML = menuItems.map(item => `
@@ -137,7 +200,6 @@ const app = {
                data-page="${item.id}" onclick="app.navigateTo('${item.id}'); return false;">
                 <i class="${item.icon}"></i>
                 ${item.label}
-                ${item.badge ? `<span class="nav-badge">${item.badge}</span>` : ''}
             </a>
         `).join('');
     },
@@ -247,8 +309,20 @@ const app = {
 
     // Load dashboard content
     async loadDashboard() {
-        const stats = await this.api.get('/api/stats');
-        const recentIncidents = await this.api.get('/api/incidents/recent');
+        let stats = { activeIncidents: 0, pendingReview: 0, resolvedToday: 0, totalIOCs: 0, threatLevel: 'Low' };
+        let recentIncidents = [];
+        
+        try {
+            stats = await this.api.get('/stats');
+        } catch (error) {
+            console.error('Failed to load stats:', error);
+        }
+        
+        try {
+            recentIncidents = await this.api.get('/incidents/recent');
+        } catch (error) {
+            console.error('Failed to load recent incidents:', error);
+        }
         
         return `
             <div class="page-header">
@@ -349,6 +423,110 @@ const app = {
         `).join('');
     },
 
+    // Additional page loaders remain the same...
+    async loadIncidents() {
+        let incidents = [];
+        
+        try {
+            const response = await this.api.get('/incidents');
+            incidents = response.incidents || [];
+        } catch (error) {
+            console.error('Failed to load incidents:', error);
+        }
+        
+        return `
+            <div class="page-header">
+                <h1 class="page-title">Incident Management</h1>
+                <div class="page-actions">
+                    <button class="btn btn-primary" onclick="app.navigateTo('create')">
+                        <i class="fas fa-plus"></i> New Incident
+                    </button>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <div class="filters">
+                        <select class="form-control" style="width: auto">
+                            <option>All Status</option>
+                            <option>Open</option>
+                            <option>In Progress</option>
+                            <option>Resolved</option>
+                        </select>
+                        <select class="form-control" style="width: auto">
+                            <option>All Severity</option>
+                            <option>Critical</option>
+                            <option>High</option>
+                            <option>Medium</option>
+                            <option>Low</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Title</th>
+                            <th>Organization</th>
+                            <th>Type</th>
+                            <th>Severity</th>
+                            <th>Status</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${this.renderIncidentTable(incidents)}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    },
+
+    renderIncidentTable(incidents) {
+        if (!incidents || incidents.length === 0) {
+            return '<tr><td colspan="8" class="text-center">No incidents found</td></tr>';
+        }
+        
+        return incidents.map(incident => `
+            <tr>
+                <td><strong>${incident.incidentId || incident.id}</strong></td>
+                <td>${incident.title}</td>
+                <td>${incident.organization}</td>
+                <td><span class="badge badge-primary">${incident.type}</span></td>
+                <td><span class="badge badge-${this.getSeverityClass(incident.severity)}">${incident.severity}</span></td>
+                <td>
+                    <span class="status">
+                        <span class="status-dot ${incident.status}"></span>
+                        ${incident.status}
+                    </span>
+                </td>
+                <td>${new Date(incident.createdAt).toLocaleDateString()}</td>
+                <td>
+                    <div class="data-table-actions">
+                        <button class="btn btn-sm btn-ghost" onclick="app.incident.view('${incident.id}')">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                        <button class="btn btn-sm btn-ghost" onclick="app.incident.edit('${incident.id}')">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    },
+
+    getSeverityClass(severity) {
+        const classes = {
+            critical: 'danger',
+            high: 'warning',
+            medium: 'primary',
+            low: 'success'
+        };
+        return classes[severity] || 'secondary';
+    },
+
     // Load create incident page
     async loadCreateIncident() {
         return `
@@ -433,288 +611,6 @@ const app = {
         `;
     },
 
-    // Show/hide loading overlay
-    showLoading(show) {
-        const overlay = document.getElementById('loadingOverlay');
-        overlay.classList.toggle('show', show);
-        this.state.isLoading = show;
-    },
-
-    // Show toast message
-    showToast(type, title, message) {
-        const container = document.getElementById('toastContainer');
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        
-        const icons = {
-            success: 'fas fa-check-circle',
-            error: 'fas fa-exclamation-circle',
-            warning: 'fas fa-exclamation-triangle',
-            info: 'fas fa-info-circle'
-        };
-        
-        toast.innerHTML = `
-            <div class="toast-icon">
-                <i class="${icons[type]}"></i>
-            </div>
-            <div class="toast-content">
-                <div class="toast-title">${title}</div>
-                <div class="toast-message">${message}</div>
-            </div>
-            <button class="toast-close" onclick="app.removeToast(this)">
-                <i class="fas fa-times"></i>
-            </button>
-        `;
-        
-        container.appendChild(toast);
-        
-        // Auto remove after 5 seconds
-        setTimeout(() => {
-            this.removeToast(toast.querySelector('.toast-close'));
-        }, 5000);
-    },
-
-    // Remove toast
-    removeToast(button) {
-        const toast = button.closest('.toast');
-        toast.classList.add('removing');
-        setTimeout(() => {
-            toast.remove();
-        }, 300);
-    },
-
-    // Show notifications panel
-    showNotifications() {
-        const panel = document.getElementById('notificationPanel');
-        panel.classList.add('show');
-        this.markNotificationsAsRead();
-    },
-
-    // Hide notifications panel
-    hideNotifications() {
-        const panel = document.getElementById('notificationPanel');
-        panel.classList.remove('show');
-    },
-
-    // Load notifications
-    async loadNotifications() {
-        try {
-            const notifications = await this.api.get('/api/notifications');
-            this.state.notifications = notifications;
-            this.updateNotificationUI();
-        } catch (error) {
-            console.error('Error loading notifications:', error);
-        }
-    },
-
-    // Update notification UI
-    updateNotificationUI() {
-        const count = this.state.notifications.filter(n => !n.read).length;
-        document.getElementById('notificationCount').textContent = count || '';
-        document.getElementById('notificationCount').style.display = count > 0 ? 'block' : 'none';
-        
-        const list = document.getElementById('notificationList');
-        if (this.state.notifications.length === 0) {
-            list.innerHTML = '<div class="empty-state"><p>No notifications</p></div>';
-            return;
-        }
-        
-        list.innerHTML = this.state.notifications.map(notification => `
-            <div class="notification-item ${notification.read ? '' : 'unread'}" onclick="app.handleNotificationClick('${notification.id}')">
-                <div class="notification-icon ${notification.type}">
-                    <i class="${this.getNotificationIcon(notification.type)}"></i>
-                </div>
-                <div class="notification-content">
-                    <div class="notification-title">${notification.title}</div>
-                    <div class="notification-message">${notification.message}</div>
-                    <div class="notification-time">${this.formatTime(notification.createdAt)}</div>
-                </div>
-            </div>
-        `).join('');
-    },
-
-    // Get notification icon
-    getNotificationIcon(type) {
-        const icons = {
-            info: 'fas fa-info',
-            warning: 'fas fa-exclamation',
-            danger: 'fas fa-times',
-            success: 'fas fa-check'
-        };
-        return icons[type] || 'fas fa-bell';
-    },
-
-    // Handle notification click
-    async handleNotificationClick(notificationId) {
-        const notification = this.state.notifications.find(n => n.id === notificationId);
-        if (!notification) return;
-        
-        // Mark as read
-        if (!notification.read) {
-            await this.api.post(`/api/notifications/${notificationId}/read`);
-            notification.read = true;
-            this.updateNotificationUI();
-        }
-        
-        // Navigate to relevant page
-        if (notification.link) {
-            this.hideNotifications();
-            this.navigateTo(notification.link);
-        }
-    },
-
-    // Mark all notifications as read
-    async markNotificationsAsRead() {
-        const unreadIds = this.state.notifications
-            .filter(n => !n.read)
-            .map(n => n.id);
-            
-        if (unreadIds.length > 0) {
-            await this.api.post('/api/notifications/read-all', { ids: unreadIds });
-            this.state.notifications.forEach(n => n.read = true);
-            this.updateNotificationUI();
-        }
-    },
-
-    // Start polling for updates
-    startPolling() {
-        // Poll for notifications every 30 seconds
-        setInterval(() => {
-            this.loadNotifications();
-        }, 30000);
-        
-        // Poll for incident updates every minute
-        setInterval(() => {
-            if (this.state.currentPage === 'dashboard' || this.state.currentPage === 'incidents') {
-                this.loadPageContent(this.state.currentPage);
-            }
-        }, 60000);
-    },
-
-    // Format time
-    formatTime(timestamp) {
-        const date = new Date(timestamp);
-        const now = new Date();
-        const diff = now - date;
-        
-        if (diff < 60000) {
-            return 'Just now';
-        } else if (diff < 3600000) {
-            return Math.floor(diff / 60000) + ' minutes ago';
-        } else if (diff < 86400000) {
-            return Math.floor(diff / 3600000) + ' hours ago';
-        } else if (diff < 604800000) {
-            return Math.floor(diff / 86400000) + ' days ago';
-        } else {
-            return date.toLocaleDateString();
-        }
-    },
-
-    // Handle window resize
-    handleResize() {
-        // Handle mobile menu
-        if (window.innerWidth <= 1024) {
-            document.querySelector('.sidebar').classList.remove('mobile-open');
-        }
-    },
-
-    // Additional page loaders
-    async loadIncidents() {
-        const incidents = await this.api.get('/api/incidents');
-        
-        return `
-            <div class="page-header">
-                <h1 class="page-title">Incident Management</h1>
-                <div class="page-actions">
-                    <button class="btn btn-primary" onclick="app.navigateTo('create')">
-                        <i class="fas fa-plus"></i> New Incident
-                    </button>
-                </div>
-            </div>
-            
-            <div class="card">
-                <div class="card-header">
-                    <div class="filters">
-                        <select class="form-control" style="width: auto">
-                            <option>All Status</option>
-                            <option>Open</option>
-                            <option>In Progress</option>
-                            <option>Resolved</option>
-                        </select>
-                        <select class="form-control" style="width: auto">
-                            <option>All Severity</option>
-                            <option>Critical</option>
-                            <option>High</option>
-                            <option>Medium</option>
-                            <option>Low</option>
-                        </select>
-                    </div>
-                </div>
-                
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Title</th>
-                            <th>Organization</th>
-                            <th>Type</th>
-                            <th>Severity</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${this.renderIncidentTable(incidents)}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    },
-
-    renderIncidentTable(incidents) {
-        if (!incidents || incidents.length === 0) {
-            return '<tr><td colspan="8" class="text-center">No incidents found</td></tr>';
-        }
-        
-        return incidents.map(incident => `
-            <tr>
-                <td><strong>${incident.id}</strong></td>
-                <td>${incident.title}</td>
-                <td>${incident.organization}</td>
-                <td><span class="badge badge-primary">${incident.type}</span></td>
-                <td><span class="badge badge-${this.getSeverityClass(incident.severity)}">${incident.severity}</span></td>
-                <td>
-                    <span class="status">
-                        <span class="status-dot ${incident.status}"></span>
-                        ${incident.status}
-                    </span>
-                </td>
-                <td>${new Date(incident.createdAt).toLocaleDateString()}</td>
-                <td>
-                    <div class="data-table-actions">
-                        <button class="btn btn-sm btn-ghost" onclick="app.incident.view('${incident.id}')">
-                            <i class="fas fa-eye"></i>
-                        </button>
-                        <button class="btn btn-sm btn-ghost" onclick="app.incident.edit('${incident.id}')">
-                            <i class="fas fa-edit"></i>
-                        </button>
-                    </div>
-                </td>
-            </tr>
-        `).join('');
-    },
-
-    getSeverityClass(severity) {
-        const classes = {
-            critical: 'danger',
-            high: 'warning',
-            medium: 'primary',
-            low: 'success'
-        };
-        return classes[severity] || 'secondary';
-    },
-
     async loadAnalytics() {
         return `
             <div class="page-header">
@@ -742,28 +638,6 @@ const app = {
                     <div class="stat-value">98.5%</div>
                     <div class="stat-label">System Uptime</div>
                     <div class="stat-trend">No change</div>
-                </div>
-            </div>
-            
-            <div class="grid grid-2">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">
-                            <i class="fas fa-chart-bar"></i>
-                            Incident Types Distribution
-                        </h2>
-                    </div>
-                    <canvas id="typeChart" height="300"></canvas>
-                </div>
-                
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="card-title">
-                            <i class="fas fa-globe"></i>
-                            Attack Origins
-                        </h2>
-                    </div>
-                    <canvas id="geoChart" height="300"></canvas>
                 </div>
             </div>
         `;
@@ -838,8 +712,221 @@ const app = {
                 <p>Settings page coming soon...</p>
             </div>
         `;
+    },
+
+    // Show/hide loading overlay
+    showLoading(show) {
+        const overlay = document.getElementById('loadingOverlay');
+        overlay.classList.toggle('show', show);
+        this.state.isLoading = show;
+    },
+
+    // Show toast message
+    showToast(type, title, message) {
+        const container = document.getElementById('toastContainer');
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        
+        const icons = {
+            success: 'fas fa-check-circle',
+            error: 'fas fa-exclamation-circle',
+            warning: 'fas fa-exclamation-triangle',
+            info: 'fas fa-info-circle'
+        };
+        
+        toast.innerHTML = `
+            <div class="toast-icon">
+                <i class="${icons[type]}"></i>
+            </div>
+            <div class="toast-content">
+                <div class="toast-title">${title}</div>
+                <div class="toast-message">${message}</div>
+            </div>
+            <button class="toast-close" onclick="app.removeToast(this)">
+                <i class="fas fa-times"></i>
+            </button>
+        `;
+        
+        container.appendChild(toast);
+        
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            this.removeToast(toast.querySelector('.toast-close'));
+        }, 5000);
+    },
+
+    // Remove toast
+    removeToast(button) {
+        const toast = button.closest('.toast');
+        toast.classList.add('removing');
+        setTimeout(() => {
+            toast.remove();
+        }, 300);
+    },
+
+    // Show notifications panel
+    showNotifications() {
+        const panel = document.getElementById('notificationPanel');
+        panel.classList.add('show');
+        this.markNotificationsAsRead();
+    },
+
+    // Hide notifications panel
+    hideNotifications() {
+        const panel = document.getElementById('notificationPanel');
+        panel.classList.remove('show');
+    },
+
+    // Load notifications
+    async loadNotifications() {
+        try {
+            const notifications = await this.api.get('/notifications');
+            this.state.notifications = notifications || [];
+            this.updateNotificationUI();
+        } catch (error) {
+            console.error('Error loading notifications:', error);
+            this.state.notifications = [];
+        }
+    },
+
+    // Update notification UI
+    updateNotificationUI() {
+        const count = this.state.notifications.filter(n => !n.isRead).length;
+        const countElement = document.getElementById('notificationCount');
+        
+        if (countElement) {
+            countElement.textContent = count || '';
+            countElement.style.display = count > 0 ? 'block' : 'none';
+        }
+        
+        const list = document.getElementById('notificationList');
+        if (!list) return;
+        
+        if (this.state.notifications.length === 0) {
+            list.innerHTML = '<div class="empty-state"><p>No notifications</p></div>';
+            return;
+        }
+        
+        list.innerHTML = this.state.notifications.map(notification => `
+            <div class="notification-item ${notification.isRead ? '' : 'unread'}" onclick="app.handleNotificationClick('${notification.id}')">
+                <div class="notification-icon ${notification.severity || 'info'}">
+                    <i class="${this.getNotificationIcon(notification.type)}"></i>
+                </div>
+                <div class="notification-content">
+                    <div class="notification-title">${notification.title}</div>
+                    <div class="notification-message">${notification.message}</div>
+                    <div class="notification-time">${this.formatTime(notification.createdAt)}</div>
+                </div>
+            </div>
+        `).join('');
+    },
+
+    // Get notification icon
+    getNotificationIcon(type) {
+        const icons = {
+            incident: 'fas fa-exclamation-triangle',
+            assignment: 'fas fa-user-plus',
+            status_change: 'fas fa-sync',
+            mention: 'fas fa-at',
+            system: 'fas fa-cog',
+            threat_alert: 'fas fa-shield-alt',
+            report: 'fas fa-file-alt'
+        };
+        return icons[type] || 'fas fa-bell';
+    },
+
+    // Handle notification click
+    async handleNotificationClick(notificationId) {
+        const notification = this.state.notifications.find(n => n.id === notificationId);
+        if (!notification) return;
+        
+        // Mark as read
+        if (!notification.isRead) {
+            try {
+                await this.api.post(`/notifications/${notificationId}/read`);
+                notification.isRead = true;
+                this.updateNotificationUI();
+            } catch (error) {
+                console.error('Failed to mark notification as read:', error);
+            }
+        }
+        
+        // Navigate to relevant page
+        if (notification.link) {
+            this.hideNotifications();
+            // Extract page from link (e.g., /incidents/123 -> incidents)
+            const page = notification.link.split('/')[1];
+            if (page) {
+                this.navigateTo(page);
+            }
+        }
+    },
+
+    // Mark all notifications as read
+    async markNotificationsAsRead() {
+        const unreadIds = this.state.notifications
+            .filter(n => !n.isRead)
+            .map(n => n.id);
+            
+        if (unreadIds.length > 0) {
+            try {
+                await this.api.post('/notifications/read-all', { ids: unreadIds });
+                this.state.notifications.forEach(n => n.isRead = true);
+                this.updateNotificationUI();
+            } catch (error) {
+                console.error('Failed to mark notifications as read:', error);
+            }
+        }
+    },
+
+    // Start polling for updates
+    startPolling() {
+        // Poll for notifications every 30 seconds
+        setInterval(() => {
+            this.loadNotifications();
+        }, 30000);
+        
+        // Poll for incident updates every minute
+        setInterval(() => {
+            if (this.state.currentPage === 'dashboard' || this.state.currentPage === 'incidents') {
+                this.loadPageContent(this.state.currentPage);
+            }
+        }, 60000);
+    },
+
+    // Format time
+    formatTime(timestamp) {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diff = now - date;
+        
+        if (diff < 60000) {
+            return 'Just now';
+        } else if (diff < 3600000) {
+            return Math.floor(diff / 60000) + ' minutes ago';
+        } else if (diff < 86400000) {
+            return Math.floor(diff / 3600000) + ' hours ago';
+        } else if (diff < 604800000) {
+            return Math.floor(diff / 86400000) + ' days ago';
+        } else {
+            return date.toLocaleDateString();
+        }
+    },
+
+    // Handle window resize
+    handleResize() {
+        // Handle mobile menu
+        if (window.innerWidth <= 1024) {
+            document.querySelector('.sidebar').classList.remove('mobile-open');
+        }
+    },
+
+    // Initialize charts (placeholder)
+    initializeCharts() {
+        // This would initialize Chart.js or other charting libraries
+        console.log('Charts would be initialized here');
     }
-};
+});
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {

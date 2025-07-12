@@ -1,4 +1,6 @@
 // Authentication Module - Fixed
+if (!window.app) window.app = {};
+
 app.auth = {
     init() {
         console.log('Auth module initialized');
@@ -7,9 +9,13 @@ app.auth = {
     // Login with proper error handling
     async login(email, password) {
         try {
+            console.log('Attempting login for:', email);
+            
             const result = await app.api.post('/auth/login', { email, password });
             
-            if (result.token) {
+            console.log('Login response:', result);
+            
+            if (result.success && result.token) {
                 // Set token in API module
                 app.api.setToken(result.token);
                 
@@ -25,14 +31,23 @@ app.auth = {
             } else {
                 return {
                     success: false,
-                    message: result.message || 'Login failed'
+                    message: result.message || result.error || 'Login failed'
                 };
             }
         } catch (error) {
             console.error('Login error:', error);
+            
+            // Check if it's an authentication error
+            if (error.status === 401) {
+                return {
+                    success: false,
+                    message: 'Invalid email or password'
+                };
+            }
+            
             return {
                 success: false,
-                message: error.message || 'Network error. Please check if the server is running.'
+                message: error.message || 'Unable to connect to server. Please check if the backend is running on port 3000.'
             };
         }
     },
@@ -51,6 +66,7 @@ app.auth = {
         // Clear stored data regardless of API call result
         app.api.clearToken();
         localStorage.removeItem('secureops_user');
+        localStorage.removeItem('secureops_token');
         
         // Redirect to login
         app.showLogin();
@@ -86,8 +102,7 @@ app.auth = {
                     id: payload.id,
                     name: payload.name || payload.email,
                     email: payload.email,
-                    role: payload.role || 'analyst',
-                    permissions: ['create', 'read', 'update', 'delete']
+                    role: payload.role || 'analyst'
                 };
             } catch (error) {
                 console.error('Error decoding token:', error);
@@ -131,7 +146,7 @@ app.auth = {
         try {
             const result = await app.api.post('/auth/refresh-token', { token: currentToken });
             
-            if (result.token) {
+            if (result.success && result.token) {
                 app.api.setToken(result.token);
                 localStorage.setItem('secureops_token', result.token);
                 

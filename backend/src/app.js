@@ -17,6 +17,9 @@ const notificationRoutes = require('./routes/notifications');
 const errorHandler = require('./middleware/error');
 const { authenticateToken } = require('./middleware/auth');
 
+// Initialize models to ensure associations are set up
+require('./models');
+
 const app = express();
 
 // Security middleware
@@ -24,7 +27,7 @@ app.use(helmet({
   contentSecurityPolicy: false, // Disable for development
 }));
 
-// CORS configuration - Fixed for proper frontend-backend communication
+// CORS configuration
 app.use(cors({
   origin: function(origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -42,7 +45,7 @@ app.use(cors({
       'http://127.0.0.1:3000'
     ];
     
-    // Also allow any origin in development
+    // Allow any origin in development
     if (process.env.NODE_ENV === 'development' || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -82,12 +85,13 @@ if (process.env.NODE_ENV === 'development') {
 // Static files for uploads
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Health check endpoint
+// Health check endpoint (no auth required)
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.0.0'
   });
 });
 
@@ -100,20 +104,27 @@ app.use('/api/iocs', authenticateToken, iocRoutes);
 app.use('/api/threats', authenticateToken, threatRoutes);
 app.use('/api/notifications', authenticateToken, notificationRoutes);
 
-// Stats endpoint (public for dashboard) - but still check for valid token
+// Stats endpoint
 app.get('/api/stats', authenticateToken, async (req, res) => {
   try {
     const { Incident, IOC } = require('./models');
     const { Op } = require('sequelize');
     
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
     const stats = {
-      activeIncidents: await Incident.count({ where: { status: 'open' } }),
-      pendingReview: await Incident.count({ where: { status: 'investigating' } }),
+      activeIncidents: await Incident.count({ 
+        where: { status: ['open', 'investigating'] } 
+      }),
+      pendingReview: await Incident.count({ 
+        where: { status: 'investigating' } 
+      }),
       resolvedToday: await Incident.count({
         where: {
           status: 'resolved',
-          updatedAt: {
-            [Op.gte]: new Date().setHours(0, 0, 0, 0)
+          resolvedAt: {
+            [Op.gte]: todayStart
           }
         }
       }),
@@ -140,7 +151,11 @@ app.get('/api/incidents/recent', authenticateToken, async (req, res) => {
         attributes: ['id', 'name', 'email']
       }],
       order: [['createdAt', 'DESC']],
-      limit: 10
+      limit: 10,
+      attributes: [
+        'id', 'incidentId', 'title', 'organization', 
+        'type', 'severity', 'status', 'createdAt'
+      ]
     });
     
     res.json(incidents);
@@ -152,7 +167,11 @@ app.get('/api/incidents/recent', authenticateToken, async (req, res) => {
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    path: req.path,
+    method: req.method
+  });
 });
 
 // Error handling middleware (must be last)
