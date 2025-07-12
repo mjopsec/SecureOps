@@ -1,6 +1,7 @@
-// API Communication Module - Updated for Real Backend
+// API Communication Module - Fixed for proper backend integration
 app.api = {
-    baseURL: window.location.origin + '/api',
+    // Use relative URL for API to work with Docker setup
+    baseURL: '/api',
     token: null,
 
     init() {
@@ -10,7 +11,8 @@ app.api = {
     // Set authorization header
     getHeaders() {
         const headers = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         };
         
         if (this.token) {
@@ -22,12 +24,24 @@ app.api = {
 
     // Handle response
     async handleResponse(response) {
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ error: 'Network error' }));
-            throw new Error(error.error || error.message || 'Request failed');
-        }
+        // Try to get response as text first
+        const text = await response.text();
         
-        return response.json();
+        // Try to parse as JSON
+        try {
+            const data = text ? JSON.parse(text) : {};
+            
+            if (!response.ok) {
+                throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+            }
+            
+            return data;
+        } catch (error) {
+            if (!response.ok) {
+                throw new Error(`Request failed: ${text || response.statusText}`);
+            }
+            throw error;
+        }
     },
 
     // GET request
@@ -35,7 +49,8 @@ app.api = {
         try {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'GET',
-                headers: this.getHeaders()
+                headers: this.getHeaders(),
+                credentials: 'include'
             });
             
             return this.handleResponse(response);
@@ -46,12 +61,13 @@ app.api = {
     },
 
     // POST request
-    async post(endpoint, data) {
+    async post(endpoint, data = {}) {
         try {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'POST',
                 headers: this.getHeaders(),
-                body: JSON.stringify(data)
+                body: JSON.stringify(data),
+                credentials: 'include'
             });
             
             return this.handleResponse(response);
@@ -62,12 +78,13 @@ app.api = {
     },
 
     // PUT request
-    async put(endpoint, data) {
+    async put(endpoint, data = {}) {
         try {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'PUT',
                 headers: this.getHeaders(),
-                body: JSON.stringify(data)
+                body: JSON.stringify(data),
+                credentials: 'include'
             });
             
             return this.handleResponse(response);
@@ -82,7 +99,8 @@ app.api = {
         try {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'DELETE',
-                headers: this.getHeaders()
+                headers: this.getHeaders(),
+                credentials: 'include'
             });
             
             return this.handleResponse(response);
@@ -103,7 +121,9 @@ app.api = {
                 formData.append(key, additionalData[key]);
             });
             
-            const headers = {};
+            const headers = {
+                'Accept': 'application/json'
+            };
             if (this.token) {
                 headers['Authorization'] = `Bearer ${this.token}`;
             }
@@ -111,7 +131,8 @@ app.api = {
             const response = await fetch(this.baseURL + endpoint, {
                 method: 'POST',
                 headers,
-                body: formData
+                body: formData,
+                credentials: 'include'
             });
             
             return this.handleResponse(response);
@@ -131,5 +152,10 @@ app.api = {
     clearToken() {
         this.token = null;
         localStorage.removeItem('secureops_token');
+    },
+
+    // Add delay utility for demo purposes
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 };

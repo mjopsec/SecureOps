@@ -1,34 +1,55 @@
-// Authentication Module
+// Authentication Module - Fixed
 app.auth = {
     init() {
         console.log('Auth module initialized');
     },
 
-    // Login
+    // Login with proper error handling
     async login(email, password) {
         try {
-            const result = await app.api.post('/api/auth/login', { email, password });
+            const result = await app.api.post('/auth/login', { email, password });
             
-            if (result.success) {
+            if (result.token) {
+                // Set token in API module
+                app.api.setToken(result.token);
+                
                 // Store user data
                 localStorage.setItem('secureops_user', JSON.stringify(result.user));
                 localStorage.setItem('secureops_token', result.token);
+                
+                return {
+                    success: true,
+                    token: result.token,
+                    user: result.user
+                };
+            } else {
+                return {
+                    success: false,
+                    message: result.message || 'Login failed'
+                };
             }
-            
-            return result;
         } catch (error) {
             console.error('Login error:', error);
             return {
                 success: false,
-                message: 'Network error. Please try again.'
+                message: error.message || 'Network error. Please check if the server is running.'
             };
         }
     },
 
     // Logout
-    logout() {
-        // Clear stored data
-        localStorage.removeItem('secureops_token');
+    async logout() {
+        try {
+            // Call logout endpoint if token exists
+            if (app.api.token) {
+                await app.api.post('/auth/logout');
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+        }
+        
+        // Clear stored data regardless of API call result
+        app.api.clearToken();
         localStorage.removeItem('secureops_user');
         
         // Redirect to login
@@ -38,23 +59,43 @@ app.auth = {
         app.showToast('info', 'Logged Out', 'You have been successfully logged out');
     },
 
-    // Get user info from token
+    // Get user info from token/storage
     getUserInfo(token) {
-        // In production, this would decode JWT token
-        // For demo, we'll get from localStorage
+        // Try to get from localStorage first
         const storedUser = localStorage.getItem('secureops_user');
         if (storedUser) {
-            return JSON.parse(storedUser);
+            try {
+                return JSON.parse(storedUser);
+            } catch (error) {
+                console.error('Error parsing stored user:', error);
+            }
         }
         
-        // Default user for demo
-        return {
-            id: 1,
-            name: 'Admin User',
-            email: 'admin@secureops.com',
-            role: 'Security Admin',
-            permissions: ['create', 'read', 'update', 'delete', 'admin']
-        };
+        // If no stored user, decode from token (if JWT)
+        if (token) {
+            try {
+                // Simple JWT decode (for the payload only, not verification)
+                const base64Url = token.split('.')[1];
+                const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+                
+                const payload = JSON.parse(jsonPayload);
+                return {
+                    id: payload.id,
+                    name: payload.name || payload.email,
+                    email: payload.email,
+                    role: payload.role || 'analyst',
+                    permissions: ['create', 'read', 'update', 'delete']
+                };
+            } catch (error) {
+                console.error('Error decoding token:', error);
+            }
+        }
+        
+        // Return null if no user found
+        return null;
     },
 
     // Check if user has permission
@@ -70,17 +111,46 @@ app.auth = {
             return false;
         }
         
-        // In production, validate with server
-        // For demo, check if token exists
-        return true;
+        try {
+            // Check if token is still valid by calling a protected endpoint
+            const result = await app.api.get('/auth/profile');
+            return !!result;
+        } catch (error) {
+            console.error('Session validation error:', error);
+            return false;
+        }
     },
 
     // Refresh token
     async refreshToken() {
-        // In production, exchange refresh token for new access token
-        return {
-            success: true,
-            token: 'refreshed-token-' + Date.now()
-        };
+        const currentToken = localStorage.getItem('secureops_token');
+        if (!currentToken) {
+            return { success: false, message: 'No token to refresh' };
+        }
+        
+        try {
+            const result = await app.api.post('/auth/refresh-token', { token: currentToken });
+            
+            if (result.token) {
+                app.api.setToken(result.token);
+                localStorage.setItem('secureops_token', result.token);
+                
+                return {
+                    success: true,
+                    token: result.token
+                };
+            }
+            
+            return {
+                success: false,
+                message: 'Failed to refresh token'
+            };
+        } catch (error) {
+            console.error('Token refresh error:', error);
+            return {
+                success: false,
+                message: error.message
+            };
+        }
     }
 };

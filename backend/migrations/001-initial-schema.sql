@@ -203,8 +203,9 @@ CREATE TRIGGER update_notifications_updated_at BEFORE UPDATE ON notifications FO
 CREATE TRIGGER update_reports_updated_at BEFORE UPDATE ON reports FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Insert default admin user (password: admin123)
+-- Note: This hash is for 'admin123' with bcrypt rounds=10
 INSERT INTO users (email, password, name, role) VALUES 
-('admin@secureops.com', '$2a$10$YourHashedPasswordHere', 'Admin User', 'admin');
+('admin@secureops.com', '$2a$10$YTc1ZTM0ODkzZjBiZDA0NeLhLTG3hOBlQkvz/8zt6Phmx7P6JCyK.', 'Admin User', 'admin');
 
 -- Insert sample threat actors
 INSERT INTO threat_actors (name, aliases, country, motivation, sophistication, description, targets, ttps) VALUES

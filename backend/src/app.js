@@ -20,21 +20,48 @@ const { authenticateToken } = require('./middleware/auth');
 const app = express();
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable for development
+}));
 
-// CORS configuration
+// CORS configuration - Fixed for proper frontend-backend communication
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL 
-    : 'http://localhost:8080',
-  credentials: true
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost',
+      'http://localhost:80',
+      'http://localhost:8080',
+      'http://localhost:3000',
+      'http://127.0.0.1',
+      'http://127.0.0.1:80',
+      'http://127.0.0.1:8080',
+      'http://127.0.0.1:3000'
+    ];
+    
+    // Also allow any origin in development
+    if (process.env.NODE_ENV === 'development' || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: process.env.RATE_LIMIT_WINDOW * 60 * 1000, // minutes to ms
+  windowMs: (process.env.RATE_LIMIT_WINDOW || 15) * 60 * 1000, // minutes to ms
   max: process.env.RATE_LIMIT_MAX || 100,
-  message: 'Too many requests from this IP, please try again later.'
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use('/api/', limiter);
 
@@ -64,17 +91,20 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API Routes
+// API Routes - Auth routes don't need authentication middleware
 app.use('/api/auth', authRoutes);
+
+// Protected routes
 app.use('/api/incidents', authenticateToken, incidentRoutes);
 app.use('/api/iocs', authenticateToken, iocRoutes);
 app.use('/api/threats', authenticateToken, threatRoutes);
 app.use('/api/notifications', authenticateToken, notificationRoutes);
 
-// Stats endpoint (public for dashboard)
-app.get('/api/stats', async (req, res) => {
+// Stats endpoint (public for dashboard) - but still check for valid token
+app.get('/api/stats', authenticateToken, async (req, res) => {
   try {
     const { Incident, IOC } = require('./models');
+    const { Op } = require('sequelize');
     
     const stats = {
       activeIncidents: await Incident.count({ where: { status: 'open' } }),
@@ -83,7 +113,7 @@ app.get('/api/stats', async (req, res) => {
         where: {
           status: 'resolved',
           updatedAt: {
-            [require('sequelize').Op.gte]: new Date().setHours(0, 0, 0, 0)
+            [Op.gte]: new Date().setHours(0, 0, 0, 0)
           }
         }
       }),
@@ -93,7 +123,30 @@ app.get('/api/stats', async (req, res) => {
     
     res.json(stats);
   } catch (error) {
+    console.error('Stats error:', error);
     res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// Recent incidents endpoint
+app.get('/api/incidents/recent', authenticateToken, async (req, res) => {
+  try {
+    const { Incident, User } = require('./models');
+    
+    const incidents = await Incident.findAll({
+      include: [{
+        model: User,
+        as: 'creator',
+        attributes: ['id', 'name', 'email']
+      }],
+      order: [['createdAt', 'DESC']],
+      limit: 10
+    });
+    
+    res.json(incidents);
+  } catch (error) {
+    console.error('Recent incidents error:', error);
+    res.status(500).json({ error: 'Failed to fetch recent incidents' });
   }
 });
 

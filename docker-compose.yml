@@ -13,6 +13,7 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
@@ -34,23 +35,28 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       PORT: 3000
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: secureops
       DB_USER: postgres
       DB_PASSWORD: secureops123
-      JWT_SECRET: your-super-secret-jwt-key-change-this
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
       JWT_EXPIRE: 7d
       BCRYPT_ROUNDS: 10
+      RATE_LIMIT_WINDOW: 15
+      RATE_LIMIT_MAX: 100
     volumes:
+      - ./backend:/app
+      - /app/node_modules
       - ./backend/uploads:/app/uploads
       - ./backend/logs:/app/logs
     ports:
       - "3000:3000"
     networks:
       - secureops-network
+    command: npm run dev
 
   # Frontend (Nginx)
   frontend:
