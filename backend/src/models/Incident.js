@@ -10,7 +10,8 @@ const Incident = sequelize.define('Incident', {
   incidentId: {
     type: DataTypes.STRING,
     unique: true,
-    allowNull: false
+    allowNull: false,
+    field: 'incident_id'
   },
   title: {
     type: DataTypes.STRING,
@@ -26,7 +27,8 @@ const Incident = sequelize.define('Incident', {
   },
   incidentDate: {
     type: DataTypes.DATE,
-    allowNull: false
+    allowNull: false,
+    field: 'incident_date'
   },
   type: {
     type: DataTypes.ENUM(
@@ -64,22 +66,28 @@ const Incident = sequelize.define('Incident', {
   },
   affectedSystems: {
     type: DataTypes.JSONB,
-    defaultValue: []
+    defaultValue: [],
+    field: 'affected_systems'
   },
   initialResponse: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'initial_response'
   },
   containmentActions: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'containment_actions'
   },
   eradicationActions: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'eradication_actions'
   },
   recoveryActions: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'recovery_actions'
   },
   lessonsLearned: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'lessons_learned'
   },
   tags: {
     type: DataTypes.ARRAY(DataTypes.STRING),
@@ -87,7 +95,8 @@ const Incident = sequelize.define('Incident', {
   },
   isPublic: {
     type: DataTypes.BOOLEAN,
-    defaultValue: false
+    defaultValue: false,
+    field: 'is_public'
   },
   confidence: {
     type: DataTypes.INTEGER,
@@ -99,16 +108,19 @@ const Incident = sequelize.define('Incident', {
   },
   riskScore: {
     type: DataTypes.INTEGER,
+    field: 'risk_score',
     validate: {
       min: 0,
       max: 100
     }
   },
   estimatedCost: {
-    type: DataTypes.DECIMAL(10, 2)
+    type: DataTypes.DECIMAL(10, 2),
+    field: 'estimated_cost'
   },
   additionalNotes: {
-    type: DataTypes.TEXT
+    type: DataTypes.TEXT,
+    field: 'additional_notes'
   },
   attachments: {
     type: DataTypes.JSONB,
@@ -116,19 +128,24 @@ const Incident = sequelize.define('Incident', {
   },
   createdBy: {
     type: DataTypes.UUID,
-    allowNull: false
+    allowNull: false,
+    field: 'created_by'
   },
   assignedTo: {
-    type: DataTypes.UUID
+    type: DataTypes.UUID,
+    field: 'assigned_to'
   },
   resolvedAt: {
-    type: DataTypes.DATE
+    type: DataTypes.DATE,
+    field: 'resolved_at'
   },
   closedAt: {
-    type: DataTypes.DATE
+    type: DataTypes.DATE,
+    field: 'closed_at'
   }
 }, {
   tableName: 'incidents',
+  underscored: true,
   hooks: {
     beforeCreate: async (incident) => {
       // Generate incident ID
@@ -156,57 +173,5 @@ const Incident = sequelize.define('Incident', {
     }
   }
 });
-
-// Class methods
-Incident.getByStatus = function(status) {
-  return this.findAll({ where: { status } });
-};
-
-Incident.getRecent = function(limit = 10) {
-  return this.findAll({
-    order: [['createdAt', 'DESC']],
-    limit
-  });
-};
-
-// Instance methods
-Incident.prototype.calculateRiskScore = function() {
-  let score = 0;
-  
-  // Severity scoring
-  const severityScores = { critical: 40, high: 30, medium: 20, low: 10 };
-  score += severityScores[this.severity] || 0;
-  
-  // Type scoring
-  const typeScores = {
-    ransomware: 30,
-    'data-breach': 30,
-    apt: 25,
-    'supply-chain': 25,
-    malware: 20,
-    phishing: 15,
-    ddos: 15,
-    insider: 20,
-    defacement: 10,
-    other: 10
-  };
-  score += typeScores[this.type] || 0;
-  
-  // Status scoring (unresolved incidents score higher)
-  if (['open', 'investigating'].includes(this.status)) {
-    score += 20;
-  } else if (['containment', 'eradication'].includes(this.status)) {
-    score += 10;
-  }
-  
-  // Time factor (older unresolved incidents score higher)
-  if (this.status !== 'resolved' && this.status !== 'closed') {
-    const daysOpen = Math.floor((new Date() - this.incidentDate) / (1000 * 60 * 60 * 24));
-    score += Math.min(daysOpen, 10); // Max 10 points for age
-  }
-  
-  this.riskScore = Math.min(score, 100);
-  return this.riskScore;
-};
 
 module.exports = Incident;

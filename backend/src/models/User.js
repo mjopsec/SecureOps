@@ -39,23 +39,29 @@ const User = sequelize.define('User', {
   },
   isActive: {
     type: DataTypes.BOOLEAN,
-    defaultValue: true
+    defaultValue: true,
+    field: 'is_active'
   },
   lastLogin: {
-    type: DataTypes.DATE
+    type: DataTypes.DATE,
+    field: 'last_login'
   },
   twoFactorEnabled: {
     type: DataTypes.BOOLEAN,
-    defaultValue: false
+    defaultValue: false,
+    field: 'two_factor_enabled'
   },
   twoFactorSecret: {
-    type: DataTypes.STRING
+    type: DataTypes.STRING,
+    field: 'two_factor_secret'
   },
   passwordResetToken: {
-    type: DataTypes.STRING
+    type: DataTypes.STRING,
+    field: 'password_reset_token'
   },
   passwordResetExpires: {
-    type: DataTypes.DATE
+    type: DataTypes.DATE,
+    field: 'password_reset_expires'
   },
   preferences: {
     type: DataTypes.JSONB,
@@ -74,6 +80,7 @@ const User = sequelize.define('User', {
   }
 }, {
   tableName: 'users',
+  underscored: true,
   hooks: {
     beforeCreate: async (user) => {
       if (user.password) {

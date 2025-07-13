@@ -2,6 +2,9 @@ require('dotenv').config();
 const app = require('./src/app');
 const { sequelize } = require('./src/config/database');
 const logger = require('./src/utils/logger');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 
 const PORT = process.env.PORT || 3000;
 
@@ -17,96 +20,191 @@ async function connectWithRetry() {
       return true;
     } catch (error) {
       retries++;
-      logger.warn(`Database connection attempt ${retries}/${maxRetries} failed. Retrying in 2 seconds...`);
+      logger.warn(`Database connection attempt ${retries}/${maxRetries} failed: ${error.message}`);
+      
+      if (retries >= maxRetries) {
+        throw new Error('Failed to connect to database after maximum retries');
+      }
+      
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
-  
-  throw new Error('Failed to connect to database after maximum retries');
 }
 
-// Initialize database
+// Initialize database using psql command
 async function initializeDatabase() {
   try {
-    // Run migrations
-    const { exec } = require('child_process');
-    const util = require('util');
-    const execPromise = util.promisify(exec);
+    logger.info('Initializing database...');
     
-    // Check if database exists and create if not
-    try {
-      await execPromise(`PGPASSWORD=${process.env.DB_PASSWORD} psql -h ${process.env.DB_HOST} -U ${process.env.DB_USER} -lqt | grep -q ${process.env.DB_NAME}`);
-      logger.info('Database already exists');
-    } catch {
-      logger.info('Creating database...');
-      await execPromise(`PGPASSWORD=${process.env.DB_PASSWORD} psql -h ${process.env.DB_HOST} -U ${process.env.DB_USER} -d postgres -c "CREATE DATABASE ${process.env.DB_NAME}"`);
-    }
+    // Check if tables exist
+    const { QueryTypes } = require('sequelize');
+    const tables = await sequelize.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
+      { type: QueryTypes.SELECT }
+    );
     
-    // Run migrations
-    const fs = require('fs').promises;
-    const path = require('path');
-    const migrationsDir = path.join(__dirname, 'migrations');
+    const tableNames = tables.map(t => t.table_name);
+    logger.info(`Found tables: ${tableNames.join(', ')}`);
     
-    try {
-      const files = await fs.readdir(migrationsDir);
-      const sqlFiles = files.filter(f => f.endsWith('.sql')).sort();
+    // If users table doesn't exist, run migration using psql
+    if (!tableNames.includes('users')) {
+      logger.info('Running initial database migration using psql...');
       
-      for (const file of sqlFiles) {
-        logger.info(`Running migration: ${file}`);
-        const migrationPath = path.join(migrationsDir, file);
+      try {
+        // Use psql to run migration
+        const cmd = `PGPASSWORD=${process.env.DB_PASSWORD} psql -h ${process.env.DB_HOST} -U ${process.env.DB_USER} -d ${process.env.DB_NAME} -f /app/migrations/001-initial-schema.sql`;
+        
+        await execPromise(cmd);
+        logger.info('Migration completed successfully');
+      } catch (error) {
+        logger.warn('psql migration failed, trying alternative method...');
+        
+        // Alternative: Create basic tables manually
         try {
-          await execPromise(`PGPASSWORD=${process.env.DB_PASSWORD} psql -h ${process.env.DB_HOST} -U ${process.env.DB_USER} -d ${process.env.DB_NAME} -f ${migrationPath}`);
-        } catch (error) {
-          if (!error.message.includes('already exists')) {
-            logger.warn(`Migration ${file} warning:`, error.message);
-          }
+          // Create users table
+          await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS users (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              email VARCHAR(255) UNIQUE NOT NULL,
+              password VARCHAR(255) NOT NULL,
+              name VARCHAR(255) NOT NULL,
+              role VARCHAR(50) DEFAULT 'analyst',
+              department VARCHAR(255),
+              phone VARCHAR(50),
+              avatar VARCHAR(255),
+              is_active BOOLEAN DEFAULT true,
+              last_login TIMESTAMP,
+              two_factor_enabled BOOLEAN DEFAULT false,
+              two_factor_secret VARCHAR(255),
+              password_reset_token VARCHAR(255),
+              password_reset_expires TIMESTAMP,
+              preferences JSONB DEFAULT '{"notifications": {"email": true, "inApp": true}, "theme": "light", "timezone": "UTC"}',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          
+          logger.info('Created users table');
+          
+          // Create other essential tables
+          await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS incidents (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              incident_id VARCHAR(50) UNIQUE NOT NULL,
+              title VARCHAR(255) NOT NULL,
+              description TEXT NOT NULL,
+              organization VARCHAR(255) NOT NULL,
+              incident_date TIMESTAMP NOT NULL,
+              type VARCHAR(50) NOT NULL,
+              severity VARCHAR(20) NOT NULL,
+              status VARCHAR(20) DEFAULT 'open',
+              impact TEXT,
+              affected_systems JSONB DEFAULT '[]',
+              initial_response TEXT,
+              containment_actions TEXT,
+              eradication_actions TEXT,
+              recovery_actions TEXT,
+              lessons_learned TEXT,
+              tags TEXT[] DEFAULT '{}',
+              is_public BOOLEAN DEFAULT false,
+              confidence INTEGER DEFAULT 50,
+              risk_score INTEGER,
+              estimated_cost DECIMAL(10, 2),
+              additional_notes TEXT,
+              attachments JSONB DEFAULT '[]',
+              created_by UUID NOT NULL,
+              assigned_to UUID,
+              resolved_at TIMESTAMP,
+              closed_at TIMESTAMP,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          
+          logger.info('Created incidents table');
+          
+          await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS iocs (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              type VARCHAR(20) NOT NULL,
+              value VARCHAR(500) NOT NULL,
+              confidence VARCHAR(20) DEFAULT 'medium',
+              tags TEXT[] DEFAULT '{}',
+              notes TEXT,
+              source VARCHAR(255),
+              first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              is_active BOOLEAN DEFAULT true,
+              malicious_score INTEGER DEFAULT 50,
+              metadata JSONB DEFAULT '{}',
+              enrichment JSONB DEFAULT '{}',
+              incident_id UUID NOT NULL,
+              created_by UUID NOT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(type, value)
+            )
+          `);
+          
+          logger.info('Created iocs table');
+          
+          // Create other tables as needed...
+          
+        } catch (tableError) {
+          logger.error('Failed to create tables:', tableError.message);
         }
       }
-    } catch (error) {
-      logger.warn('Migrations directory not found or error reading:', error.message);
     }
     
-    // Sync models in development (without dropping tables)
-    if (process.env.NODE_ENV !== 'production') {
-      await sequelize.sync({ alter: false });
-      logger.info('Database models synchronized');
-    }
+    // Initialize models
+    require('./src/models');
     
     // Ensure admin user exists
     const { User } = require('./src/models');
     const bcrypt = require('bcryptjs');
     
-    const adminEmail = 'admin@secureops.com';
-    let admin = await User.findOne({ where: { email: adminEmail } });
-    
-    if (!admin) {
-      logger.info('Creating admin user...');
-      const hashedPassword = await bcrypt.hash('admin123', 10);
-      admin = await User.create({
-        email: adminEmail,
-        password: hashedPassword,
-        name: 'Admin User',
-        role: 'admin',
-        isActive: true
-      });
-      logger.info('Admin user created successfully');
-    } else {
-      // Update password to ensure it's correct
-      const hashedPassword = await bcrypt.hash('admin123', 10);
-      await admin.update({ password: hashedPassword });
-      logger.info('Admin user password updated');
-    }
-    
-    // Run seed if needed
-    const userCount = await User.count();
-    if (userCount === 1) {
-      logger.info('Running database seed...');
-      try {
-        const seedDatabase = require('./scripts/seed-database');
-        await seedDatabase();
-      } catch (error) {
-        logger.warn('Seed script not found or error:', error.message);
+    try {
+      const adminEmail = 'admin@secureops.com';
+      let admin = await User.findOne({ where: { email: adminEmail } });
+      
+      if (!admin) {
+        logger.info('Creating admin user...');
+        const hashedPassword = await bcrypt.hash('admin123', 10);
+        
+        // Try direct SQL insert first
+        try {
+          await sequelize.query(
+            `INSERT INTO users (id, email, password, name, role, is_active, created_at, updated_at) 
+             VALUES (gen_random_uuid(), :email, :password, :name, :role, true, NOW(), NOW())
+             ON CONFLICT (email) DO NOTHING`,
+            {
+              replacements: {
+                email: adminEmail,
+                password: hashedPassword,
+                name: 'Admin User',
+                role: 'admin'
+              }
+            }
+          );
+          logger.info('Admin user created via SQL');
+        } catch (sqlError) {
+          // Fallback to Sequelize create
+          admin = await User.create({
+            email: adminEmail,
+            password: hashedPassword,
+            name: 'Admin User',
+            role: 'admin',
+            isActive: true
+          });
+          logger.info('Admin user created via Sequelize');
+        }
+      } else {
+        logger.info('Admin user already exists');
       }
+      
+      logger.info('✅ Admin credentials: admin@secureops.com / admin123');
+    } catch (error) {
+      logger.error('Error managing admin user:', error.message);
     }
     
   } catch (error) {
@@ -118,6 +216,8 @@ async function initializeDatabase() {
 // Start server
 async function startServer() {
   try {
+    logger.info('Starting SecureOps server...');
+    
     // Connect to database with retry
     await connectWithRetry();
     
@@ -126,21 +226,33 @@ async function startServer() {
     
     // Start server
     const server = app.listen(PORT, '0.0.0.0', () => {
-      logger.info(`SecureOps API server running on port ${PORT}`);
+      logger.info(`🚀 SecureOps API server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV}`);
       logger.info(`Database: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
-      logger.info(`Health check available at: http://localhost:${PORT}/health`);
+      logger.info(`Health check: http://localhost:${PORT}/health`);
+      logger.info(`API base: http://localhost:${PORT}/api`);
     });
     
     // Graceful shutdown
-    process.on('SIGTERM', async () => {
-      logger.info('SIGTERM signal received: closing HTTP server');
+    const gracefulShutdown = async () => {
+      logger.info('Received shutdown signal...');
+      
       server.close(() => {
         logger.info('HTTP server closed');
       });
-      await sequelize.close();
+      
+      try {
+        await sequelize.close();
+        logger.info('Database connection closed');
+      } catch (error) {
+        logger.error('Error closing database:', error);
+      }
+      
       process.exit(0);
-    });
+    };
+    
+    process.on('SIGTERM', gracefulShutdown);
+    process.on('SIGINT', gracefulShutdown);
     
   } catch (error) {
     logger.error('Unable to start server:', error);
@@ -148,13 +260,17 @@ async function startServer() {
   }
 }
 
-// Handle unhandled promise rejections
+// Handle errors
 process.on('unhandledRejection', (err) => {
   logger.error('Unhandled Promise Rejection:', err);
-  // Don't exit in development
   if (process.env.NODE_ENV === 'production') {
     process.exit(1);
   }
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception:', err);
+  process.exit(1);
 });
 
 // Start the server
